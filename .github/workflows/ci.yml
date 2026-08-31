@@ -126,7 +126,7 @@ jobs:
             build-essential cpio rsync file bc curl xz-utils unzip python3 podman
 
       - name: Cache Buildroot downloads
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .cache/buildroot-dl
           key: ${{ matrix.container }}-buildroot-dl-${{ hashFiles(format('containers/{0}/metadata.env', matrix.container), format('containers/{0}/buildroot-external/configs/*', matrix.container)) }}
