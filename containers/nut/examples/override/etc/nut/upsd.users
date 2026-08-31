@@ -1,0 +1,4 @@
+# Example only. Copy to overrides/nut/etc/nut/upsd.users and change the password.
+[slave]
+    password = REPLACE_WITH_A_STRONG_PASSWORD
+    upsmon secondary

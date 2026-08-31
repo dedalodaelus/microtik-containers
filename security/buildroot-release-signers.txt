@@ -1,0 +1,6 @@
+# Trusted Buildroot release signing key fingerprints.
+#
+# Peter Korsgaard <jacmet@uclibc.org>
+AB07D806D2CE741FB886EE50B025BA8B59C36319
+# Arnout Vandecappelle <arnout@rnout.be>
+18C7DF2819C1733D822D599EA500D6EE9CB0E540

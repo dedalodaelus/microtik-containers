@@ -1,0 +1,25 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "separate-pull-requests": true,
+  "always-update": true,
+  "packages": {
+    "containers/nut": {
+      "release-type": "simple",
+      "component": "nut",
+      "package-name": "nut",
+      "initial-version": "0.1.0",
+      "version-file": "VERSION",
+      "changelog-path": "CHANGELOG.md",
+      "include-component-in-tag": true,
+      "include-v-in-tag": true,
+      "bump-minor-pre-major": true,
+      "changelog-sections": [
+        {"type": "feat", "section": "Features"},
+        {"type": "fix", "section": "Bug Fixes"},
+        {"type": "deps", "section": "Dependencies"},
+        {"type": "perf", "section": "Performance"},
+        {"type": "docs", "section": "Documentation"}
+      ]
+    }
+  }
+}

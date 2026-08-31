@@ -1,0 +1,2 @@
+# The public image intentionally has no authentication users.
+# For upsmon or authenticated commands, use a local override.
