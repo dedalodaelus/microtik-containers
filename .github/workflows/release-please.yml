@@ -1,0 +1,75 @@
+name: Release Please
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout automation helpers
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Create GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-issues: write
+
+      - name: Run Release Please
+        id: release
+        uses: googleapis/release-please-action@v5
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      - name: Normalize Release Please PR heads to Verified App commits
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t prs < <(gh pr list \
+            --repo "$GITHUB_REPOSITORY" \
+            --state open \
+            --label 'autorelease: pending' \
+            --json number \
+            --jq '.[].number')
+          for pr in "${prs[@]}"; do
+            python3 scripts/resign-release-pr.py --repo "$GITHUB_REPOSITORY" --pr "$pr"
+          done
+
+      - name: Assert open Release Please commits are Verified
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t shas < <(gh pr list \
+            --repo "$GITHUB_REPOSITORY" \
+            --state open \
+            --label 'autorelease: pending' \
+            --json headRefOid \
+            --jq '.[].headRefOid')
+          for sha in "${shas[@]}"; do
+            verified="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${sha}" --jq '.commit.verification.verified')"
+            reason="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${sha}" --jq '.commit.verification.reason')"
+            echo "Release PR head ${sha}: verified=${verified} reason=${reason}"
+            [[ "$verified" == true ]]
+          done

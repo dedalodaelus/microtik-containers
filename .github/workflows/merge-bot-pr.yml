@@ -1,0 +1,54 @@
+name: Merge bot PR
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number (Buildroot or Release Please)
+        required: true
+        type: number
+
+permissions: {}
+
+concurrency:
+  group: merge-bot-pr-${{ inputs.pr }}
+  cancel-in-progress: false
+
+jobs:
+  merge:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Create GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-issues: read
+
+      - name: Validate bot PR and request squash auto-merge
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR: ${{ inputs.pr }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          data="$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" \
+            --json state,baseRefName,labels,author,url)"
+          state="$(jq -r .state <<<"$data")"
+          base="$(jq -r .baseRefName <<<"$data")"
+          author="$(jq -r .author.login <<<"$data")"
+          allowed="$(jq -r '[.labels[].name] | any(. == "buildroot" or . == "autorelease: pending")' <<<"$data")"
+          [[ "$state" == OPEN ]]
+          [[ "$base" == main ]]
+          [[ "$allowed" == true ]] || { echo "PR is not an approved automation PR" >&2; exit 1; }
+
+          bad="$(gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/pulls/${PR}/commits" \
+            --jq '.[] | select(.commit.verification.verified != true) | .sha')"
+          [[ -z "$bad" ]] || { echo "Unverified PR commits: $bad" >&2; exit 1; }
+
+          echo "Requesting App-authenticated squash merge for PR #${PR} by ${author}"
+          gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --auto --squash

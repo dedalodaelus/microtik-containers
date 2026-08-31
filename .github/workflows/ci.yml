@@ -1,0 +1,164 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, devel]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: validate
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Validate scripts and configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          find scripts containers -type f -name '*.sh' -print0 | xargs -0 -r -n1 bash -n
+          python3 -m compileall -q scripts tests
+          python3 -m unittest discover -s tests -v
+          python3 - <<'PY'
+          import json
+          for path in [
+              'release-please-config.json',
+              '.release-please-manifest.json',
+              '.github/rulesets/main.json',
+          ]:
+              with open(path, encoding='utf-8') as f:
+                  json.load(f)
+          PY
+          ./scripts/list-containers.py
+
+      - name: Validate Conventional Commit PR title
+        if: github.event_name == 'pull_request'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          regex='^(feat|fix|deps|perf|docs|chore|ci|build|refactor|test|style|revert)(\([A-Za-z0-9._/-]+\))?!?: .+'
+          [[ "$PR_TITLE" =~ $regex ]] || {
+            echo "PR title must follow Conventional Commits: $PR_TITLE" >&2
+            exit 1
+          }
+
+      - name: Verify every PR commit is signed
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bad="$(gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/commits" \
+            --jq '.[] | select(.commit.verification.verified != true) | .sha')"
+          if [[ -n "$bad" ]]; then
+            echo "Unverified commit(s) found:" >&2
+            echo "$bad" >&2
+            exit 1
+          fi
+
+  discover:
+    name: discover
+    runs-on: ubuntu-24.04
+    outputs:
+      containers: ${{ steps.changed.outputs.containers }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - id: changed
+        name: Determine affected containers
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BASE: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == workflow_dispatch ]]; then
+            containers="$(./scripts/changed-containers.py --all)"
+          elif [[ "$EVENT_NAME" == pull_request ]]; then
+            containers="$(./scripts/changed-containers.py --base "$PR_BASE" --head "$HEAD_SHA")"
+          else
+            containers="$(./scripts/changed-containers.py --base "$PUSH_BASE" --head "$HEAD_SHA")"
+          fi
+          echo "containers=$containers" >> "$GITHUB_OUTPUT"
+          echo "Affected containers: $containers"
+
+  build:
+    name: build-${{ matrix.container }}
+    needs: discover
+    if: needs.discover.outputs.containers != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        container: ${{ fromJSON(needs.discover.outputs.containers) }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cpio rsync file bc curl xz-utils unzip python3 podman
+
+      - name: Cache Buildroot downloads
+        uses: actions/cache@v4
+        with:
+          path: .cache/buildroot-dl
+          key: ${{ matrix.container }}-buildroot-dl-${{ hashFiles(format('containers/{0}/metadata.env', matrix.container), format('containers/{0}/buildroot-external/configs/*', matrix.container)) }}
+          restore-keys: |
+            ${{ matrix.container }}-buildroot-dl-
+
+      - name: Build
+        run: ./scripts/build.sh "${{ matrix.container }}"
+
+      - name: Upload CI artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.container }}-${{ github.sha }}
+          path: dist/${{ matrix.container }}/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  required:
+    name: required
+    if: always()
+    needs: [validate, discover, build]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Enforce required CI result
+        shell: bash
+        env:
+          VALIDATE: ${{ needs.validate.result }}
+          DISCOVER: ${{ needs.discover.result }}
+          BUILD: ${{ needs.build.result }}
+        run: |
+          set -euo pipefail
+          [[ "$VALIDATE" == success ]]
+          [[ "$DISCOVER" == success ]]
+          [[ "$BUILD" == success || "$BUILD" == skipped ]]

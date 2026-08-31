@@ -1,0 +1,51 @@
+name: Health rebuild
+
+on:
+  schedule:
+    - cron: '17 4 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: health-rebuild
+  cancel-in-progress: false
+
+jobs:
+  discover:
+    runs-on: ubuntu-24.04
+    outputs:
+      containers: ${{ steps.list.outputs.containers }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: list
+        run: echo "containers=$(./scripts/list-containers.py)" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: discover
+    strategy:
+      fail-fast: false
+      matrix:
+        container: ${{ fromJSON(needs.discover.outputs.containers) }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cpio rsync file bc curl xz-utils unzip python3 podman
+
+      - uses: actions/cache@v4
+        with:
+          path: .cache/buildroot-dl
+          key: health-${{ matrix.container }}-${{ hashFiles(format('containers/{0}/metadata.env', matrix.container), format('containers/{0}/buildroot-external/configs/*', matrix.container)) }}
+          restore-keys: |
+            health-${{ matrix.container }}-
+            ${{ matrix.container }}-buildroot-dl-
+
+      - run: ./scripts/build.sh "${{ matrix.container }}"

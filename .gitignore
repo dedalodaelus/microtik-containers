@@ -1,0 +1,22 @@
+# Build output
+.build/
+dist/
+.cache/
+
+# Local/private overrides
+# Keep directories and .gitkeep files trackable, ignore their contents.
+overrides/**/*
+!overrides/**/
+!overrides/**/.gitkeep
+!overrides/README.md
+
+# Editors / OS
+.DS_Store
+*.swp
+*.swo
+*~
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/

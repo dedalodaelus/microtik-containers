@@ -1,0 +1,12 @@
+name: Feature request
+description: Suggest an improvement or another useful RouterOS container
+title: "[feature] "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: Proposal
+      description: Explain the use case, target MikroTik hardware/architecture and why a container is useful.
+    validations:
+      required: true

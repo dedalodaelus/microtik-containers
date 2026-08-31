@@ -1,0 +1,85 @@
+name: Release assets
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-assets-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  identify:
+    runs-on: ubuntu-24.04
+    outputs:
+      supported: ${{ steps.parse.outputs.supported }}
+      container: ${{ steps.parse.outputs.container }}
+      version: ${{ steps.parse.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - id: parse
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$TAG" =~ ^([A-Za-z0-9._-]+)-v([0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?)$ ]] \
+             && [[ -d "containers/${BASH_REMATCH[1]}" ]]; then
+            echo "supported=true" >> "$GITHUB_OUTPUT"
+            echo "container=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+            echo "version=${BASH_REMATCH[2]}" >> "$GITHUB_OUTPUT"
+          else
+            echo "supported=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-and-publish:
+    needs: identify
+    if: needs.identify.outputs.supported == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 0
+
+      - name: Validate release version
+        env:
+          CONTAINER: ${{ needs.identify.outputs.container }}
+          VERSION: ${{ needs.identify.outputs.version }}
+        run: |
+          set -euo pipefail
+          actual="$(tr -d '[:space:]' < "containers/${CONTAINER}/VERSION")"
+          [[ "$actual" == "$VERSION" ]] || {
+            echo "Tag version $VERSION != containers/$CONTAINER/VERSION ($actual)" >&2
+            exit 1
+          }
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cpio rsync file bc curl xz-utils unzip python3 podman
+
+      - uses: actions/cache@v4
+        with:
+          path: .cache/buildroot-dl
+          key: release-${{ needs.identify.outputs.container }}-${{ hashFiles(format('containers/{0}/metadata.env', needs.identify.outputs.container), format('containers/{0}/buildroot-external/configs/*', needs.identify.outputs.container)) }}
+          restore-keys: |
+            release-${{ needs.identify.outputs.container }}-
+            ${{ needs.identify.outputs.container }}-buildroot-dl-
+
+      - name: Build release assets
+        run: ./scripts/build.sh "${{ needs.identify.outputs.container }}"
+
+      - name: Upload assets to Release Please release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+          CONTAINER: ${{ needs.identify.outputs.container }}
+        run: gh release upload "$TAG" "dist/${CONTAINER}/"* --clobber --repo "$GITHUB_REPOSITORY"

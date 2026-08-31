@@ -1,0 +1,40 @@
+name: Bug report
+description: Report a reproducible container or build problem
+title: "[bug] "
+labels: [bug]
+body:
+  - type: dropdown
+    id: container
+    attributes:
+      label: Container
+      options:
+        - NUT
+        - Other / future container
+    validations:
+      required: true
+  - type: input
+    id: router
+    attributes:
+      label: MikroTik model
+      placeholder: hEX S E60iUGS
+    validations:
+      required: true
+  - type: input
+    id: routeros
+    attributes:
+      label: RouterOS version
+      placeholder: 7.24.1
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Describe the observed and expected behavior. Remove secrets from logs.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs
+      render: shell

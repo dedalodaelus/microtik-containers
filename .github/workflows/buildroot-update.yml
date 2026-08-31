@@ -1,0 +1,155 @@
+name: Buildroot updater
+
+on:
+  schedule:
+    - cron: '23 3 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: buildroot-updater
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install signature verification dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gnupg
+
+      - id: update
+        name: Detect and verify official Stable Buildroot release
+        run: python3 scripts/update-buildroot.py --apply
+
+      - name: Stop when already current
+        if: steps.update.outputs.changed != 'true'
+        run: echo "All stable-tracking containers already use Buildroot ${{ steps.update.outputs.latest }}"
+
+      - name: Create GitHub App token
+        if: steps.update.outputs.changed == 'true'
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-issues: write
+
+      - id: prepare
+        if: steps.update.outputs.changed == 'true'
+        name: Prepare bot branch
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          LATEST: ${{ steps.update.outputs.latest }}
+          KIND: ${{ steps.update.outputs.update_kind }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch="deps/buildroot-${LATEST}"
+          existing="$(gh pr list \
+            --repo "$GITHUB_REPOSITORY" \
+            --state open \
+            --head "$branch" \
+            --json number \
+            --jq '.[0].number // empty')"
+
+          if [[ "$KIND" == "patch" ]]; then
+            conventional_type="fix"
+          else
+            conventional_type="feat"
+          fi
+          title="${conventional_type}(buildroot): update Buildroot to ${LATEST}"
+
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "existing_pr=$existing" >> "$GITHUB_OUTPUT"
+          echo "title=$title" >> "$GITHUB_OUTPUT"
+
+      - id: commit
+        if: steps.update.outputs.changed == 'true' && steps.prepare.outputs.existing_pr == ''
+        name: Create Verified GitHub App commit
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          BRANCH: ${{ steps.prepare.outputs.branch }}
+          TITLE: ${{ steps.prepare.outputs.title }}
+          CHANGED_FILES: ${{ steps.update.outputs.changed_files }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          IFS=',' read -r -a files <<< "$CHANGED_FILES"
+          python3 scripts/github-verified-commit.py \
+            --repo "$GITHUB_REPOSITORY" \
+            --base main \
+            --branch "$BRANCH" \
+            --message "$TITLE" \
+            --files "${files[@]}"
+
+      - id: pr
+        if: steps.update.outputs.changed == 'true' && steps.prepare.outputs.existing_pr == ''
+        name: Open Buildroot update PR
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          LATEST: ${{ steps.update.outputs.latest }}
+          BRANCH: ${{ steps.prepare.outputs.branch }}
+          TITLE: ${{ steps.prepare.outputs.title }}
+          KIND: ${{ steps.update.outputs.update_kind }}
+          CONTAINERS: ${{ steps.update.outputs.containers }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh label create buildroot \
+            --repo "$GITHUB_REPOSITORY" \
+            --color 0E8A16 \
+            --description "Buildroot dependency update" \
+            --force
+          gh label create dependencies \
+            --repo "$GITHUB_REPOSITORY" \
+            --color 0366D6 \
+            --description "Dependency update" \
+            --force
+
+          cat > /tmp/pr-body.md <<EOF_BODY
+          Updates the official Buildroot **Stable** release to **${LATEST}**.
+
+          - Update class: \`${KIND}\`
+          - Affected containers: \`${CONTAINERS}\`
+          - Source: https://buildroot.org/download.html (row labelled **Stable**)
+          - The updater verifies the official PGP-signed checksum with a pinned Buildroot release key.
+          - The downloaded \`.tar.xz\` must match the signed SHA256 before metadata is changed.
+          - Candidate/RC releases are ignored.
+
+          Same-series patch updates may be auto-merged after required CI passes. New stable series always require a manual merge.
+          EOF_BODY
+
+          url="$(gh pr create \
+            --repo "$GITHUB_REPOSITORY" \
+            --base main \
+            --head "$BRANCH" \
+            --title "$TITLE" \
+            --body-file /tmp/pr-body.md \
+            --label buildroot \
+            --label dependencies)"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          number="$(gh pr view "$url" --repo "$GITHUB_REPOSITORY" --json number --jq .number)"
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+
+      - name: Enable auto-merge for patch releases
+        if: steps.update.outputs.changed == 'true' && steps.prepare.outputs.existing_pr == '' && steps.update.outputs.auto_merge == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        run: gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --auto --squash
+
+      - name: Existing update PR
+        if: steps.update.outputs.changed == 'true' && steps.prepare.outputs.existing_pr != ''
+        run: echo "Buildroot ${{ steps.update.outputs.latest }} already has PR #${{ steps.prepare.outputs.existing_pr }}"
